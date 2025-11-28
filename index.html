@@ -64,14 +64,14 @@
   </div>
 
 <script>
-/* ================= إعدادات قابلة للتعديل ================= */
+/* ================= إعدادات قابلة للتعديل (تم تحسينها) ================= */
 // استخدام Flash لسرعة الترجمة
 const API_MODEL = "gemini-2.5-flash"; 
 const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
-// تم زيادة حجم المقطع قليلاً لاستيعاب نصوص أكبر
-const SAFE_CHAR_PER_CHUNK = 7500; 
-// زيادة التوازي قليلاً لـ 3 لـ 500 فصل
-const MAX_CONCURRENCY = 3; 
+// تم زيادة حجم المقطع لتقليل عدد طلبات API (10000 حرف)
+const SAFE_CHAR_PER_CHUNK = 10000; 
+// تم زيادة التوازي لزيادة سرعة الإنجاز
+const MAX_CONCURRENCY = 5; 
 // عدد محاولات الاتصال عند الفشل المؤقت
 const MAX_RETRIES = 5; 
 const STORAGE_KEY = 'geminiTranslatorState'; // مفتاح حفظ الحالة للاستئناف
@@ -155,10 +155,13 @@ async function callGemini(promptText) {
       const j = await res.json().catch(()=>({}));
       if(res.ok){
         const cand = j?.candidates?.[0];
-        if(cand?.content?.parts?.[0]?.text) return cand.content.parts[0].text;
-        if(cand?.content?.text) return cand.content.text;
+        const text = cand?.content?.parts?.[0]?.text || cand?.content?.text;
+        
+        // التحقق من أن النص موجود وصالح
+        if(typeof text === 'string' && text.trim().length > 0) return text;
+        
         // فشل في استخلاص النص لكن الاستجابة كانت 200
-        throw new Error('فشل استخلاص النص من الاستجابة: ' + JSON.stringify(j));
+        throw new Error('فشل استخلاص النص من الاستجابة أو النص فارغ: ' + JSON.stringify(j));
       } else {
         lastErr = j?.error?.message || `HTTP ${res.status}`;
         if(res.status === 429 || res.status >= 500 || res.status === 400 && lastErr.includes('rate limit')){
@@ -270,7 +273,7 @@ function saveState(stateData) {
   }
 }
 
-/* ------------------- ترجمة فصل مع تجزئة ذكية ------------------- */
+/* ------------------- ترجمة فصل مع تجزئة ذكية (مع إلغاء التقطيع للفصول الصغيرة) ------------------- */
 async function translateChapterWithChunks(chapter, chapterIndex, totalChapters){
   const text = chapter.rawText || '';
   if(!text || text.length < 10) { chapter.translated = ''; return; }
@@ -278,22 +281,7 @@ async function translateChapterWithChunks(chapter, chapterIndex, totalChapters){
   const safeChars = SAFE_CHAR_PER_CHUNK;
   const pieces = [];
   let cursor = 0;
-  while(cursor < text.length){
-    // استخدام دالة القطع الذكية
-    const cutIndex = safeCut(text, cursor, safeChars);
-    const part = text.substring(cursor, cutIndex).trim();
-    if(part) pieces.push(part);
-    cursor = cutIndex;
-    if(cursor === text.length && pieces.length === 0) break;
-  }
   
-  if(pieces.length === 0 && text.length > 0) pieces.push(text); // في حال كان النص أصغر من حد القطع
-
-  writeLog(`🔁 فصل ${chapterIndex+1} من ${totalChapters}: تقطيع إلى ${pieces.length} مقطع(ات)`);
-
-  const results = new Array(pieces.length);
-  let index = 0;
-
   let context = '';
   // إضافة أمثلة Few-Shot للمساعدة في تحديد أسلوب الترجمة
   if (fewShot.length > 0) {
@@ -304,6 +292,32 @@ async function translateChapterWithChunks(chapter, chapterIndex, totalChapters){
       });
       context += "\n";
   }
+
+  // **المنطق الجديد: إلغاء التقطيع إذا كان حجم الفصل مع المطالبة صغيراً**
+  // نقدر طول مطالبة السياق (context) ومطالبة الترجمة (prompt) بحد أدنى 1000 حرف
+  const estimatedPromptOverhead = context.length + 1000; 
+
+  if (text.length + estimatedPromptOverhead <= safeChars) {
+      // الفصل صغير: لا تقطيع، يتم إرساله كقطعة واحدة
+      pieces.push(text);
+      writeLog(`🔁 فصل ${chapterIndex+1} من ${totalChapters}: صغير، ترجمة كاملة في مقطع واحد`);
+  } else {
+      // الفصل كبير: تطبيق التقطيع الذكي
+      while(cursor < text.length){
+        const cutIndex = safeCut(text, cursor, safeChars);
+        const part = text.substring(cursor, cutIndex).trim();
+        if(part) pieces.push(part);
+        cursor = cutIndex;
+        if(cursor === text.length && pieces.length === 0) break;
+      }
+      if(pieces.length === 0 && text.length > 0) pieces.push(text); // في حال كان النص أصغر من حد القطع
+      writeLog(`🔁 فصل ${chapterIndex+1} من ${totalChapters}: تقطيع إلى ${pieces.length} مقطع(ات)`);
+  }
+  // نهاية المنطق الجديد
+
+  const results = new Array(pieces.length);
+  let index = 0;
+
 
   async function worker(){
     while(true){
@@ -327,7 +341,7 @@ async function translateChapterWithChunks(chapter, chapterIndex, totalChapters){
         writeLog(`❌ فشل ترجمة مقطع ${i+1} في فصل ${chapterIndex+1}: ${err.message}`, 'error');
         results[i] = '[خطأ في الترجمة - سيتم إدراجه كنص أصلي في EPUB]'; // وضع علامة خطأ
       }
-      await sleep(120);
+      // تم إزالة await sleep(120); لزيادة سرعة التوازي
     }
   }
 
@@ -340,7 +354,11 @@ async function translateChapterWithChunks(chapter, chapterIndex, totalChapters){
 }
 
 /* ------------------- إعادة بناء EPUB ------------------- */
-function escapeHtml(s){ return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
+function escapeHtml(s){ 
+  // التأكد من أن s هو سلسلة نصية قبل استخدام replaceAll
+  if (typeof s !== 'string') return '';
+  return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); 
+}
 function normalizePath(p){ return p.replace(/\\/g,'/').replace(/^\.\//,'').toLowerCase(); }
 
 async function buildTranslatedEpub(originalZip, chapters, title){
@@ -485,4 +503,3 @@ async function startWorkflow(){
 </script>
 </body>
 </html>
-
