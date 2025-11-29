@@ -1,0 +1,473 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="utf-8"/>
+  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <title>مترجم EPUB احترافي — Gemini PWA</title>
+  
+  <link rel="manifest" href="manifest.json">
+  
+  <script>
+    if ('serviceWorker' in navigator) {
+      window.addEventListener('load', () => {
+        // تأكد أن sw.js موجود في نفس المجلد
+        navigator.serviceWorker.register('sw.js')
+          .then(reg => console.log('✅ تم تسجيل Service Worker بنجاح.'))
+          .catch(err => console.error('❌ فشل تسجيل Service Worker:', err));
+      });
+    }
+  </script>
+  
+  <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+  <style>
+    body{font-family:system-ui, "Amiri", serif;background:#f5f7fb;padding:18px}
+    .card{max-width:980px;margin:0 auto;background:white;padding:18px;border-radius:12px;box-shadow:0 10px 30px rgba(2,6,23,0.06)}
+    h1{color:#0f5bd8}
+    label{display:block;margin:8px 0;font-weight:600}
+    input[type=text], input[type=file], button{width:100%;padding:12px;margin-bottom:12px;border:1px solid #ccc;border-radius:8px;box-sizing:border-box}
+    button{background:#0f5bd8;color:white;cursor:pointer;font-weight:700;border:none;transition:background 0.3s}
+    button:hover{background:#0d4aa6}
+    button:disabled{background:#a0a0a0;cursor:not-allowed}
+    #progressBar{width:0%;height:10px;background:#0f5bd8;border-radius:5px;transition:width 0.3s}
+    #progressContainer{background:#e0e0e0;border-radius:5px;margin-bottom:15px}
+    #logBox{max-height:200px;overflow-y:scroll;background:#f0f0f0;padding:10px;border-radius:8px;border:1px solid #ddd;font-size:14px;line-height:1.4;margin-top:10px;text-align:left}
+    .log-info{color:#333}.log-error{color:#d9534f}.log-ok{color:#5cb85c}
+    #downloadLink{display:none;background:#5cb85c;text-decoration:none;text-align:center;padding:12px;color:white;border-radius:8px;font-weight:700}
+    #downloadLink:hover{background:#4cae4c}
+    .file-input-wrapper{position:relative;overflow:hidden;display:inline-block}
+    .file-input-wrapper input[type=file]{position:absolute;left:0;top:0;opacity:0;cursor:pointer}
+    .file-input-wrapper button{display:block;padding:12px;background:#17a2b8;color:white;border-radius:8px;font-weight:700;border:none;transition:background 0.3s}
+    .file-input-wrapper button:hover{background:#138496}
+    .file-input-wrapper label{margin:0}
+  </style>
+</head>
+<body>
+
+<div class="card">
+  <h1>مترجم EPUB احترافي — Gemini PWA</h1>
+  
+  <p>هذه الأداة تستخدم Gemini API لترجمة ملفات EPUB بشكل متوازي، مع دعم الاستئناف التلقائي لضمان إكمال الكتب الطويلة.</p>
+
+  <label for="apiKey">مفتاح Gemini API:</label>
+  <input type="text" id="apiKey" placeholder="ادخل مفتاح API الخاص بك (مثال: AIzaSy...)">
+
+  <label for="epubFile">ملف EPUB للترجمة:</label>
+  <input type="file" id="epubFile" accept=".epub">
+  
+  <label for="fewFile">ملف Few-Shot (اختياري لتعليم أسلوب الترجمة):</label>
+  <input type="file" id="fewFile" accept=".json">
+
+  <button id="startButton" onclick="startTranslation()">بدء الترجمة / استئناف</button>
+  <button id="clearButton" onclick="clearState()">إلغاء الترجمة ومسح البيانات</button>
+
+  <div id="progressContainer">
+    <div id="progressBar"></div>
+  </div>
+  <div id="progressText">في انتظار البدء...</div>
+
+  <a id="downloadLink"></a>
+
+  <div id="logBox"></div>
+</div>
+
+<script>
+  // الثوابت الأساسية
+  const MAX_CONCURRENCY = 8; // عدد طلبات API المتوازية
+  const MAX_RETRIES = 5;     // الحد الأقصى لإعادة المحاولة عند فشل طلب API
+  const SAFE_CHAR_PER_CHUNK = 10000; // الحجم الآمن للـ Prompt (أقل من حد Gemini)
+  const STORAGE_KEY = 'epubTranslationState';
+  let isTranslating = false;
+  let fewShot = [];
+  let zip; // متغير عالمي لملف الـ ZIP
+
+  // دوال مساعدة
+  const qs = (id) => document.getElementById(id);
+  const writeLog = (message, type = 'info') => {
+    const logBox = qs('logBox');
+    const logEntry = document.createElement('div');
+    logEntry.className = `log-${type}`;
+    logEntry.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
+    logBox.prepend(logEntry);
+    if(logBox.children.length > 50) logBox.removeChild(logBox.lastChild);
+  };
+  const setProgress = (percent, text) => {
+    qs('progressBar').style.width = percent + '%';
+    qs('progressText').textContent = text;
+  };
+  const saveState = (state) => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  };
+  const loadState = () => {
+    const state = localStorage.getItem(STORAGE_KEY);
+    return state ? JSON.parse(state) : null;
+  };
+  const clearState = () => {
+    localStorage.removeItem(STORAGE_KEY);
+    qs('downloadLink').style.display = 'none';
+    writeLog('🗑️ تم مسح حالة الترجمة المحفوظة.', 'info');
+    setProgress(0, 'تم مسح الحالة.');
+    location.reload(); // لإعادة تعيين الواجهة
+  };
+
+  // ----------------------------------------------------
+  // 1. منطق تجزئة النص الآمن (للحفاظ على سياق الجملة)
+  // ----------------------------------------------------
+  const safeCut = (text) => {
+    const chunks = [];
+    let currentPos = 0;
+    while(currentPos < text.length) {
+        let chunkSize = Math.min(SAFE_CHAR_PER_CHUNK, text.length - currentPos);
+        let chunk = text.substring(currentPos, currentPos + chunkSize);
+        
+        // إذا كان حجم المقطع هو الحد الأقصى، نحاول قطعه عند نهاية جملة أو فقرة
+        if (chunkSize === SAFE_CHAR_PER_CHUNK && currentPos + chunkSize < text.length) {
+            
+            // نبدأ البحث عن نقطة قطع آمنة من نهاية المقطع (90% من الحجم الآمن)
+            const searchStart = Math.floor(SAFE_CHAR_PER_CHUNK * 0.9);
+            let safeCutIndex = -1;
+            
+            // نبحث عن أقرب علامات ترقيم رئيسية للخلف:
+            let lastPeriod = chunk.lastIndexOf('.', SAFE_CHAR_PER_CHUNK);
+            let lastExclamation = chunk.lastIndexOf('!', SAFE_CHAR_PER_CHUNK);
+            let lastQuestion = chunk.lastIndexOf('?', SAFE_CHAR_PER_CHUNK);
+            let lastNewline = chunk.lastIndexOf('\n', SAFE_CHAR_PER_CHUNK);
+
+            // نأخذ الأبعد بين علامات الترقيم (لجعل المقطع أكبر ما يمكن)
+            safeCutIndex = Math.max(lastPeriod, lastExclamation, lastQuestion, lastNewline);
+            
+            // إذا وجدنا علامة ترقيم بعد نقطة البحث الآمنة (90%)، نستخدمها
+            if (safeCutIndex >= searchStart) {
+                chunkSize = safeCutIndex + 1; // نضيف 1 لتضمين علامة الترقيم
+                chunk = text.substring(currentPos, currentPos + chunkSize);
+            }
+        }
+        
+        chunks.push(chunk);
+        currentPos += chunkSize;
+    }
+    return chunks;
+  };
+
+  // ----------------------------------------------------
+  // 2. دالة طلب API مع إعادة محاولة أسّية (Exponential Backoff)
+  // ----------------------------------------------------
+  const callGemini = async (prompt, retryCount = 0) => {
+    const apiKey = qs('apiKey').value;
+    if (!apiKey) throw new Error("مفتاح API غير موجود.");
+    
+    const delay = Math.pow(2, retryCount) * 1000 + (Math.random() * 1000); // 1s, 2s, 4s, 8s, ...
+
+    await new Promise(resolve => setTimeout(resolve, delay)); // انتظار التأخير (صفر في المحاولة الأولى)
+
+    try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+        const response = await fetch(url, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                contents: [{ role: "user", parts: [{ text: prompt }] }],
+                config: { temperature: 0.1, maxOutputTokens: 2000 }
+            })
+        });
+
+        if (response.status === 429) { // Rate Limit
+            if (retryCount < MAX_RETRIES) {
+                writeLog(`⚠️ تجاوز حدود المعدل (429). إعادة محاولة رقم ${retryCount + 1} بعد ${Math.round(delay / 1000)} ثوانٍ...`, 'error');
+                return await callGemini(prompt, retryCount + 1); // إعادة محاولة
+            } else {
+                throw new Error("تجاوز الحد الأقصى لإعادة المحاولة بسبب تجاوز حدود المعدل (429).");
+            }
+        }
+        
+        if (!response.ok) {
+            const errorBody = await response.json().catch(() => ({}));
+            const errorMessage = errorBody.error ? errorBody.error.message : response.statusText;
+             if (response.status >= 500 && retryCount < MAX_RETRIES) { // 5xx Server Error
+                writeLog(`⚠️ خطأ خادم (5xx). إعادة محاولة رقم ${retryCount + 1} بعد ${Math.round(delay / 1000)} ثوانٍ...`, 'error');
+                return await callGemini(prompt, retryCount + 1); // إعادة محاولة
+            }
+            throw new Error(`خطأ API (${response.status}): ${errorMessage}`);
+        }
+
+        const data = await response.json();
+        const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+        if (!text) throw new Error("استجابة فارغة أو غير متوقعة من API.");
+        return text;
+
+    } catch (error) {
+        if (retryCount < MAX_RETRIES && (error.message.includes('Failed to fetch') || error.message.includes('408'))) {
+            // محاولة إعادة في حالة خطأ في الشبكة أو مهلة (408)
+            writeLog(`⚠️ خطأ في الشبكة. إعادة محاولة رقم ${retryCount + 1} بعد ${Math.round(delay / 1000)} ثوانٍ...`, 'error');
+            return await callGemini(prompt, retryCount + 1);
+        }
+        throw error;
+    }
+  };
+
+  // ----------------------------------------------------
+  // 3. دالة ترجمة الفصل بتقسيمه إلى مقاطع متوازية
+  // ----------------------------------------------------
+  const translateChapterWithChunks = async (ch, chapterIndex, totalChapters) => {
+    // ⚠️ يجب ألا تتم الترجمة مرة أخرى إذا كان النص المترجم موجودًا بالفعل (للاستئناف)
+    if (ch.translatedText && ch.translatedText.trim() !== '') {
+        writeLog(`⏭️ تجاوز الفصل ${chapterIndex + 1}/${totalChapters} (مترجم بالفعل).`, 'info');
+        return;
+    }
+
+    const rawText = ch.rawText;
+    const chunks = safeCut(rawText);
+    const translatedChunks = new Array(chunks.length).fill(null);
+    let successfulChunks = 0;
+    let failedChunks = 0;
+    
+    // بناء الـ Prompt الأساسي
+    const systemInstruction = `أنت مترجم احترافي لروايات السلالات الخيالية (Xianxia/Wuxia). 
+    مهمتك هي ترجمة النص التالي إلى العربية الفصحى مع الحفاظ على الأسلوب القصصي الأصلي.
+    **القواعد:**
+    1. لا تقم بترجمة الأسماء الخاصة، المصطلحات التقنية الأساسية، أو الوحدات (مثل: Gustav، Kilo، Evolver).
+    2. لا تضف أي شرح أو مقدمة أو خاتمة للترجمة.
+    3. حافظ على تنسيق الفقرات الأصلية (لا تدمج أو تقسم الفقرات).
+    
+    **أمثلة Few-Shot (للحفاظ على اتساق المصطلحات):**
+    ${JSON.stringify(fewShot)}`;
+
+    const worker = async (index) => {
+        const chunk = chunks[index];
+        const prompt = `${systemInstruction}\n\n**النص الأصلي للترجمة:**\n${chunk}`;
+        
+        try {
+            const translated = await callGemini(prompt);
+            translatedChunks[index] = translated.trim();
+            successfulChunks++;
+            writeLog(`✅ اكتمل جزء ${successfulChunks}/${chunks.length} من الفصل ${chapterIndex + 1}`, 'info');
+        } catch (error) {
+            translatedChunks[index] = ``;
+            failedChunks++;
+            writeLog(`❌ فشل ترجمة جزء من الفصل ${chapterIndex + 1}: ${error.message}`, 'error');
+            // رمي الخطأ لتوقيف الحلقة المتوازية (للسماح بإعادة المحاولة)
+            throw error; 
+        }
+    };
+
+    let allChunksSucceeded = false;
+    let attempt = 0;
+    while(attempt < MAX_RETRIES) {
+        attempt++;
+        const currentPromises = [];
+        let runningWorkers = 0;
+
+        for (let i = 0; i < chunks.length; i++) {
+            // تجاهل المقاطع التي تمت ترجمتها بنجاح
+            if (translatedChunks[i] && !translatedChunks[i].startsWith('
+) { chapter.translated = ''; return; }
+
+  const safeChars = SAFE_CHAR_PER_CHUNK;
+  const pieces = [];
+  let cursor = 0;
+  while(cursor < text.length){
+    // استخدام دالة القطع الذكية
+    const cutIndex = safeCut(text, cursor, safeChars);
+    const part = text.substring(cursor, cutIndex).trim();
+    if(part) pieces.push(part);
+    cursor = cutIndex;
+    if(cursor === text.length && pieces.length === 0) break;
+  }
+  
+  if(pieces.length === 0 && text.length > 0) pieces.push(text); // في حال كان النص أصغر من حد القطع
+
+  writeLog(`🔁 فصل ${chapterIndex+1} من ${totalChapters}: تقطيع إلى ${pieces.length} مقطع(ات)`);
+
+  const results = new Array(pieces.length);
+  let index = 0;
+
+  let context = '';
+  // إضافة أمثلة Few-Shot للمساعدة في تحديد أسلوب الترجمة
+  if (fewShot.length > 0) {
+      context += "=== أمثلة Few-Shot للترجمة (يجب تطبيق الأسلوب) ===\n";
+      // نحدد 5 أمثلة كحد أقصى لضمان عدم تجاوز حجم المطالبة
+      fewShot.slice(0, 5).forEach(sample => { 
+          context += `[النص الأصلي]: ${sample.en.replace(/\n/g, ' ')}\n[الترجمة المطلوبة]: ${sample.ar.replace(/\n/g, ' ')}\n---\n`;
+      });
+      context += "\n";
+  }
+
+  async function worker(){
+    while(true){
+      const i = index++;
+      if(i >= pieces.length) break;
+      const piece = pieces[i];
+      
+      // الكود المعدل لرسالة الطلب (Prompt)
+      let prompt = context + 
+        "**الدور والتعليمات:** أنت مترجم روائي محترف متخصص في ترجمة قصص وروايات الخيال (Xianxia/Wuxia). ترجم المقطع التالي إلى عربية فصحى وأدبية. يجب عليك:\n" +
+        "1. **الاتساق:** طبق أسلوب الترجمة الموضح في أمثلة Few-Shot أعلاه بدقة.\n" +
+        "2. **الهيكلية:** حافظ على هيكل الفقرات الأصلية بالضبط (لا تضيف أو تدمج فقرات).\n" +
+        "3. **المصطلحات:** لا تترجم المصطلحات التقنية أو الأسماء الخاصة (مثل Qi, Dantian, Core Formation, أو أسماء الأماكن/الشخصيات الصينية).\n\n" +
+        "**المقطع الإنجليزي المطلوب ترجمته:**\n" + piece + "\n\n**الترجمة العربية المطلوبة:**";
+
+      try {
+        const out = await callGemini(prompt);
+        results[i] = out ? out.trim() : '[فارغ]';
+        writeLog(`✅ ترجمة مقطع ${i+1}/${pieces.length} في فصل ${chapterIndex+1}`);
+      } catch(err){
+        writeLog(`❌ فشل ترجمة مقطع ${i+1} في فصل ${chapterIndex+1}: ${err.message}`, 'error');
+        results[i] = '[خطأ في الترجمة - سيتم إدراجه كنص أصلي في EPUB]'; // وضع علامة خطأ
+      }
+      await sleep(120);
+    }
+  }
+
+  // تشغيل العمال بالتوازي
+  const workers = Array.from({length: MAX_CONCURRENCY}, () => worker());
+  await Promise.all(workers);
+
+  // تحديث الفصل بالترجمة المدمجة
+  chapter.translated = results.join('\n\n');
+}
+
+/* ------------------- إعادة بناء EPUB ------------------- */
+function escapeHtml(s){ return s.replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;').replaceAll('"','&quot;').replaceAll("'",'&#39;'); }
+function normalizePath(p){ return p.replace(/\\/g,'/').replace(/^\.\//,'').toLowerCase(); }
+
+async function buildTranslatedEpub(originalZip, chapters, title){
+  setProgress(92, 'يبني ملف EPUB المترجم ...');
+  const out = new JSZip();
+  // يجب أن يكون هذا بدون ضغط
+  out.file('mimetype', 'application/epub+zip', {compression: 'STORE'}); 
+
+  for(const path of Object.keys(originalZip.files)){
+    const f = originalZip.file(path);
+    if(!f) continue;
+    
+    // التحقق من أن الملف هو فصل (XHTML/HTML) وموجود في قائمة الفصول
+    const found = chapters.find(c => normalizePath(c.href) === normalizePath(path));
+    
+    if(found && found.translated){
+      // استبدال ملف XHTML بالمحتوى المترجم
+      const bodyHtml = found.translated.split('\n\n').map(p => {
+        // إذا كان المقطع هو علامة خطأ، نستخدم النص الأصلي لعدم خسارة المحتوى
+        if(p.includes('[خطأ في الترجمة - سيتم إدراجه كنص أصلي في EPUB]')) {
+             return `<p style="color:red; font-size: 0.8em;">[**خطأ في ترجمة هذا المقطع، تم إدراج النص الأصلي بدلاً منه**]</p><p dir="ltr" lang="en">${escapeHtml(found.rawText)}</p>`;
+        }
+        return `<p dir="rtl" lang="ar">${escapeHtml(p)}</p>`;
+      }).join('\n');
+      
+      // نبحث عن وسم <body> الأصلي لإدراج المحتوى المترجم بشكل صحيح
+      const originalHtml = await f.async('text');
+      let xhtml = originalHtml;
+      
+      const bodyStart = originalHtml.indexOf('<body>');
+      const bodyEnd = originalHtml.indexOf('</body>');
+
+      if (bodyStart !== -1 && bodyEnd !== -1 && bodyStart < bodyEnd) {
+          // استبدال محتوى الجسم
+          xhtml = originalHtml.substring(0, bodyStart + 6) + 
+                  `\n<div dir="rtl" lang="ar">${bodyHtml}</div>\n` + 
+                  originalHtml.substring(bodyEnd);
+          // محاولة إضافة خاصية dir="rtl" و lang="ar" للـ <html> إذا لم تكن موجودة
+          if (!xhtml.includes('dir="rtl"')) {
+             xhtml = xhtml.replace('<html', '<html dir="rtl" lang="ar"');
+          }
+      } else {
+        // كحل احتياطي بسيط إذا لم يُعثر على وسم <body>
+        xhtml = `<?xml version="1.0" encoding="utf-8"?>\n<html xmlns="http://www.w3.org/1999/xhtml" dir="rtl" lang="ar"><head><meta charset="utf-8"/><title>${title}</title></head><body>\n<div dir="rtl" lang="ar">${bodyHtml}</div>\n</body></html>`;
+      }
+      
+      out.file(path, xhtml);
+    } else {
+      // نسخ المحتوى الأصلي (بما في ذلك OPF والـ CSS والصور)
+      const content = await f.async('uint8array');
+      out.file(path, content);
+    }
+  }
+
+  const blob = await out.generateAsync({type:'blob', mimeType:'application/epub+zip'});
+  return blob;
+}
+
+
+/* ------------------- المجرى الكامل مع منطق الاستئناف ------------------- */
+async function startWorkflow(){
+  try {
+    if(!epubFile) { writeLog('❌ لم تختَر ملف EPUB', 'error'); return; }
+    const apiKey = qs('apiKey').value.trim();
+    if(!apiKey) { writeLog('❌ ألصق مفتاح API أولًا', 'error'); return; }
+    
+    startBtn.disabled = true;
+    setProgress(1, 'يجهز العملية...');
+    
+    let state = localStorage.getItem(STORAGE_KEY);
+    state = state ? JSON.parse(state) : null;
+    
+    let initialChapterIndex = 0;
+    let zip, opfPath, chapters;
+    
+    // محاولة التحميل من حالة الاستئناف
+    const isResuming = (state && state.filename === epubFile.name && state.apiKey === apiKey && Array.isArray(state.chapters));
+
+    if (isResuming) {
+        // حالة استئناف
+        zip = await JSZip.loadAsync(epubFile);
+        opfPath = state.opfPath;
+        chapters = state.chapters;
+        
+        // جلب النص الأصلي للفصول غير المترجمة (لإعادة الترجمة)
+        const tempResult = await readOpfAndCollect(zip, opfPath);
+        chapters.forEach((c, i) => {
+            if (c.translated === null && tempResult.chapters[i]) {
+                c.rawHtml = tempResult.chapters[i].rawHtml;
+                c.rawText = tempResult.chapters[i].rawText;
+            } else if(c.translated) {
+                // قد لا نحتاج النص الأصلي للفصول المترجمة، لكن يجب التأكد من وجوده إذا كانت هناك مشكلة
+            }
+        });
+
+        initialChapterIndex = chapters.findIndex(c => c.translated === null);
+        if (initialChapterIndex === -1) initialChapterIndex = chapters.length;
+        writeLog(`✅ استئناف: تم تحميل الحالة، البدء من الفصل ${initialChapterIndex + 1} من ${chapters.length}`, 'ok');
+    } else {
+        // حالة بدء جديد
+        writeLog('🔎 يبدأ استخراج الكتاب...');
+        const extractionResult = await extractChaptersFromEpub(epubFile);
+        zip = extractionResult.zip; opfPath = extractionResult.opfPath; chapters = extractionResult.chapters;
+        initialChapterIndex = 0;
+        // حفظ الحالة الأولية في Local Storage (فصول فارغة)
+        saveState({ filename: epubFile.name, apiKey, opfPath, chapters });
+    }
+
+    setProgress(8, 'مستخلص الفصول — يبدأ الترجمة فصلًا فصلًا');
+    
+    // الترجمة والاستئناف
+    for(let i = initialChapterIndex; i < chapters.length; i++){
+        setProgress(10 + Math.round((i/chapters.length)*80), `ترجمة فصل ${i+1}/${chapters.length}`);
+        // نمرر الـ fewShot من متغيرها العام
+        await translateChapterWithChunks(chapters[i], i, chapters.length); 
+        
+        // حفظ الحالة بعد كل فصل تم ترجمته
+        saveState({ filename: epubFile.name, apiKey, opfPath, chapters });
+    }
+
+    // إعادة بناء الكتاب بعد اكتمال جميع الفصول
+    const title = epubFile.name.replace(/\.[^/.]+$/, '') + '_مترجم_آلي';
+    const blob = await buildTranslatedEpub(zip, chapters, title);
+
+    // إتاحة رابط التحميل
+    const url = URL.createObjectURL(blob);
+    const a = qs('downloadLink'); a.href = url; a.download = title + '.epub'; a.style.display = 'inline-block';
+    a.textContent = '⬇️ تنزيل EPUB المترجم: ' + a.download;
+    
+    setProgress(100, 'اكتمل — انقر تنزيل');
+    writeLog('🎉 انتهاء الترجمة الآلية لـ ' + chapters.length + ' فصل — يمكنك تحميل الملف الآن', 'ok');
+    localStorage.removeItem(STORAGE_KEY); // إزالة حالة الاستئناف المكتملة
+    
+  } catch(err){
+    writeLog('❌ فشل العملية: ' + (err.message || err), 'error');
+    setProgress(0, 'فشل');
+  } finally {
+    startBtn.disabled = false;
+    updateStartButton();
+  }
+}
+</script>
+</body>
+</html>
