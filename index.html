@@ -6,9 +6,9 @@
   <title>مترجم EPUB احترافي - Gemini (نسخة احترافية)</title>
 
   <!-- استيراد JSZip كـ module داخل سكربت صغير يضعه على window -->
-  <script type="module">
-    import JSZip from "https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.esm.min.js";
-    window.JSZip = JSZip;
+  <script>
+  window.JSZipPromise = import("https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.esm.min.js")
+    .then(m => { window.JSZip = m.default; });
   </script>
 
   <style>
