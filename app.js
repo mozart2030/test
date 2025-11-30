@@ -1,4 +1,5 @@
 // app.js (ES module) - نسخة احترافية مُبسطة: خدمات داخل نفس الملف للتوافق الثلاثي
+await window.JSZipPromise;
 import * as storage from './storage.js';
 
 const qs = id => document.getElementById(id);
