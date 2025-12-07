@@ -3,8 +3,10 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>مترجم EPUB احترافي – Gemini</title>
+  <title>مترجم EPUB احترافي - Gemini</title>
+
   <script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+
   <style>
     :root{--primary:#0f5bd8;--danger:#dc3545;--ok:#28a745}
     body{font-family:Arial, sans-serif;background:#f5f7fb;color:#222;padding:18px;max-width:1000px;margin:0 auto}
@@ -63,7 +65,7 @@
     </div>
     <div id="progressText" class="small muted">جاهز — اختر ملف ومفتاح</div>
 
-    <a id="downloadLink" href="#" download style="display:none">⬇️ تنزيل EPUB المترجم</a>
+    <a id="downloadLink" href="#" download>⬇️ تنزيل EPUB المترجم</a>
   </div>
 
   <div class="card">
@@ -71,16 +73,7 @@
     <div id="logBox" role="log" aria-live="polite"></div>
   </div>
 
-  <!-- تطبيق -->
   <script type="module" src="./app.js"></script>
   <script type="module" src="./storage.js"></script>
-
-  <!-- تفعيل الأزرار فور تحميل الصفحة -->
-  <script>
-    window.addEventListener('DOMContentLoaded', () => {
-      document.getElementById('startButton').disabled = false;
-      document.getElementById('clearButton').disabled = false;
-    });
-  </script>
 </body>
 </html>
