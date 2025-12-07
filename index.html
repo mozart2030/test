@@ -63,7 +63,7 @@
     </div>
     <div id="progressText" class="small muted">جاهز — اختر ملف ومفتاح</div>
 
-    <a id="downloadLink" href="#" download>⬇️ تنزيل EPUB المترجم</a>
+    <a id="downloadLink" href="#" download style="display:none">⬇️ تنزيل EPUB المترجم</a>
   </div>
 
   <div class="card">
@@ -74,5 +74,13 @@
   <!-- تطبيق -->
   <script type="module" src="./app.js"></script>
   <script type="module" src="./storage.js"></script>
+
+  <!-- تفعيل الأزرار فور تحميل الصفحة -->
+  <script>
+    window.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('startButton').disabled = false;
+      document.getElementById('clearButton').disabled = false;
+    });
+  </script>
 </body>
 </html>
