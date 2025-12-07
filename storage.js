@@ -1,4 +1,5 @@
-// storage.js (es module) – واجهة بسيطة للـ IndexedDB
+// storage.js
+// واجهة بسيطة للـ IndexedDB (es module)
 const DB_NAME = 'epub-translator-db';
 const DB_VERSION = 1;
 const STORE_STATE = 'state';
@@ -32,8 +33,11 @@ async function withStore(storeName, mode, callback) {
 
 // state helpers
 export async function saveState(stateObj) {
-  await withStore(STORE_STATE, 'readwrite', (store) => store.put(stateObj, 'meta'));
+  await withStore(STORE_STATE, 'readwrite', (store) => {
+    store.put(stateObj, 'meta');
+  });
 }
+
 export async function loadState() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -44,6 +48,7 @@ export async function loadState() {
     req.onerror = () => reject(req.error);
   });
 }
+
 export async function clearAllState() {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -82,4 +87,12 @@ export async function loadZip(key) {
   const db = await openDB();
   return new Promise((resolve, reject) => {
     const tx = db.transaction([STORE_ZIP], 'readonly');
-    const store = tx
+    const store = tx.objectStore(STORE_ZIP);
+    const req = store.get(key);
+    req.onsuccess = () => resolve(req.result || null);
+    req.onerror = () => reject(req.error);
+  });
+}
+export async function deleteZip(key) {
+  await withStore(STORE_ZIP, 'readwrite', (store) => store.delete(key));
+}
