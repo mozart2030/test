@@ -206,6 +206,9 @@ clearBtn.addEventListener('click', async ()=> {
 startBtn.addEventListener('click', startWorkflow);
 
 async function startWorkflow() {
+  // تأكيد تفعيل الزرار قبل أي عملية
+  document.getElementById('startButton').disabled = false;
+
   try {
     if (!epubFile) { writeLog('❌ لم تختر ملف EPUB', 'error'); return; }
     const apiKey = qs('apiKey').value.trim();
