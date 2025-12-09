@@ -1,6 +1,6 @@
 // storage.js – واجهة بسيطة لـ IndexedDB (ES Module)
 const DB_NAME = 'epub-translator-db';
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const STORE_STATE = 'state';
 const STORE_CHUNKS = 'chunks';
 const STORE_ZIP = 'zip';
